@@ -47,6 +47,7 @@ func main() {
 		}
 		file.Close()
 		kva := mapf(filename, string(content))
+		//...表示切片被打散传入
 		intermediate = append(intermediate, kva...)
 	}
 

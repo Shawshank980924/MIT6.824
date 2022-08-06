@@ -1,0 +1,77 @@
+:::info
+💡  分布式的第1个Lab就正式开始啦！
+这个lab主要内容就是在单机上对MapReduce论文内容进行简化后实现Map Reduce的单词计数器，不是很难，主要还是熟悉go的一些用法，好久没用go了，只会写一些丑陋的代码
+:::
+### Your Job ([moderate/hard](https://pdos.csail.mit.edu/6.824/labs/guidance.html))
+
+- [x] 这个word count的MapReduce有哪些组成部分
+- Coordinator
+   - 这个相当于论文中的master节点，主要负责管理map和reduce task的状态信息并为work节点分配任务，其中状态信息包括
+      - map和reduce task总数
+      - 各个task的运行状态(idle, in-progress, complete)，
+      - 任务开始时间：为了后续重新执行crash 的worker节点任务，还需要任务的开始时间，用以判断任务执行是否超时
+      - 每个map task对于的文件块地址
+      - 已完成的task（主要用于job结束标志的判断）
+      - 可以参考如下代码
+```java
+type Coordinator struct {
+	// Your definitions here.
+	//mapTask和reduceTask的总数
+	MapTaskNum int
+	ReduceTaskNum int 
+	//当前完成
+	//维护每个map和reduce task的状态,0表示idle，1表示in-progess，2表示complete
+	MapTaskState []int
+	ReduceTaskState []int
+	//每个task开始的时间戳
+	MapTaskStart []int64
+	ReduceTaskStart []int64
+	//已经完成的task
+	CompleteMapNum int
+	CompleteReduceNum int
+	//mapTask对应的fileName
+	MapFile []string
+	//共享资源需要维护一把读写锁
+	sync.RWMutex
+}
+```
+
+- Worker
+   - 这就是论文中的worker节点，主要负责向coordinator申请并执行map和reduce任务
+- Rpc 调用部分
+   - 真实的分布式场景应该不同的worker和master是位于不同ip的物理机器，worker之间以及和master的通信需要借助rpc远程调用（申请任务，提交任务信息等）
+   - 这个lab中在单机中简化rpc调用，用同一台机器中通过Unix sockets实现不同进程间通信而不是tcp来实现真正不同物理机器上的远程调用
+   - 由于所有的woker共用一个文件系统，所有woker节点之间的通信就简化掉了，reduce函数执行时直接访问本地即可
+- [x] 该Lab单词计数器的MapReduce整体执行流程
+1. 初始化Coordinator
+
+确定处理的文件以及map和reduce task的数量，初始化各个task的状态信息，和论文中有区别的是，文件因为不是很大所以没有进行分片，直接按照一个文件对应一个maptask来处理，最后启动server服务，监听端口
+
+2. 启动worker节点，分配任务
+
+woker节点通过rpc调用向coordinator申请分配任务，coordinator首先在maptask找idle或者是in-progress超时任务，若map没有任务可分配，则再在reduce tasks中找idle或者是in-progress超时任务，返回worker 任务类型和处理文件名以及任务id；若没有任务分配，等待一段时间后重新发起申请直到服务器下线失联表示job全部完成
+
+2. worker节点调用map或者reduce函数
+
+通过wc的插件导入map和reduce函数并运行，对于map任务读取input file后需要根据key做hash分桶到R个中间文件中；对于reduce任务，首先需要轮询coordinator判断map任务是否全部完成，并读取该id对应的所有hash桶中的kv，然后做排序并合并输出到结果文件。任务执行完成后需要向coordinator提交信息，并重新申请新任务
+
+3. 主函数通过Done()函数判断job是否完成
+
+主函数中通过轮询Done()访问coordinator的已完成的task来判断是否结束进程，否则阻塞
+
+- [x] task导向而不是woker导向
+
+这里的实现我没有通过心跳维护worker的状态，只是通过lazy的方式维护任务的状态，coordinator不主动维护，有申请调用时才会检查，我感觉这样实现对于这个lab来说更简单一些
+
+- [x] 怎么实现worker的容错性
+
+根据论文中的思路，一方面通过写中间文件并最终rename的方式保证写入文件的原子性，另一方面设置超时时间10s，只要10s内woker节点没有向coordinator提交过信息则可以重置该任务，**注意具体实现是可以lazy的**，只有当有worker申请任务的时候或者是reduce轮询maptask完成情况的时候才会去检查maptask的所有状态，并重置超时任务
+
+- [x] 共享资源的竞争
+
+因为每一次rpc调用都会起一个线程，coordinator中维护的状态信息都是所有线程共用的，需要给struct 维护一把锁，为了多粒度提高并行效率，我使用了读写锁
+
+- [x] 容易出错遗漏的一些地方
+
+reduce在轮询maptask状态时，需要更新任务reduce开始的时间；若maptask有重置，reduce不是仍然轮询等待，应该放弃自己的reduce任务转而申请新的task，且该reduce task在coordinator中的状态信息应该更新为idle
+论文中有提到一般worker节点的数量是少于map task的任务数量，这样可以更好的做到负载均衡和最大限度利用资源，所以一个任务完成后worker节点不能结束应该重新rpc调用申请新的任务
