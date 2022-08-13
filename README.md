@@ -75,3 +75,4 @@ woker节点通过rpc调用向coordinator申请分配任务，coordinator首先�
 
 reduce在轮询maptask状态时，需要更新任务reduce开始的时间；若maptask有重置，reduce不是仍然轮询等待，应该放弃自己的reduce任务转而申请新的task，且该reduce task在coordinator中的状态信息应该更新为idle
 论文中有提到一般worker节点的数量是少于map task的任务数量，这样可以更好的做到负载均衡和最大限度利用资源，所以一个任务完成后worker节点不能结束应该重新rpc调用申请新的任务
+
